@@ -25,23 +25,28 @@ _FINDING_SCHEMA = {
         "damage_type": {
             "type": "string",
             "enum": [
-                "structural_collapse", "roof_damage", "flooding",
-                "debris_field", "infrastructure_damage", "vegetation_damage",
-                "vehicle_damage", "fire_damage", "erosion", "other",
+                "structural_collapse", "roof_damage", "debris_field",
+                "vegetation_damage", "infrastructure_damage", "vehicle_damage",
+                "window_door_damage", "flooding", "other",
             ],
         },
         "severity": {
             "type": "string",
             "enum": ["minor", "moderate", "severe", "destroyed"],
         },
-        "description": {"type": "string"},
+        "damage_description": {"type": "string"},
         "structures_affected": {"type": "integer"},
         "building_type": {
             "type": "string",
             "enum": [
-                "residential", "commercial", "industrial",
-                "public", "infrastructure", "unknown",
+                "residential", "commercial", "industrial", "public",
+                "infrastructure", "agricultural", "unknown",
             ],
+        },
+        "building_name": {"type": ["string", "null"]},
+        "named_entities": {
+            "type": "array",
+            "items": {"type": "string"},
         },
         "infrastructure_impacts": {
             "type": "array",
@@ -51,8 +56,12 @@ _FINDING_SCHEMA = {
             "type": "array",
             "items": {"type": "string"},
         },
+        "visual_evidence_quality": {
+            "type": "string",
+            "enum": ["clear", "partial", "poor"],
+        },
     },
-    "required": ["damage_type", "severity", "description"],
+    "required": ["damage_type", "severity", "damage_description"],
 }
 
 _RESPONSE_SCHEMA = {
@@ -70,24 +79,38 @@ def _build_prompt(disaster_type: str) -> str:
     focus = cfg["pegasus_focus"].strip()
 
     return (
-        f"Analyze this {disaster_type} footage for damage assessment.\n"
-        "For each visually distinct damaged area or scene, identify:\n"
-        "- damage_type: the primary type of damage visible\n"
-        "- severity: how severe the damage is\n"
-        "- description: detailed description of what you observe.\n"
-        "  Where applicable, use damage-assessment vocabulary such as\n"
-        '  "destroyed", "uninhabitable", "total loss", "structural damage",\n'
-        '  "major damage", "minor damage" so the description is comparable\n'
-        "  to official damage reports.\n"
-        "- structures_affected: estimated count of damaged structures\n"
-        "- building_type: type of structures affected\n"
+        f"Analyze this {disaster_type} damage footage. For each visually "
+        "distinct damaged area or structure, identify:\n"
+        "- damage_type: one of [structural_collapse, roof_damage, debris_field,\n"
+        "  vegetation_damage, infrastructure_damage, vehicle_damage,\n"
+        "  window_door_damage, flooding, other]\n"
+        "- severity: one of [minor, moderate, severe, destroyed]\n"
+        "- damage_description: detailed description of visible damage. Use\n"
+        '  damage-assessment vocabulary ("destroyed", "uninhabitable",\n'
+        '  "total loss", "structural damage", "major damage", "minor damage")\n'
+        "  so descriptions are comparable to official reports.\n"
+        "- building_type: one of [residential, commercial, industrial, public,\n"
+        "  infrastructure, agricultural, unknown]\n"
+        "- building_name: any visible business name, sign, or identifier\n"
+        "  (null if not visible). Read signs literally — a sign that says\n"
+        '  "DRIFTERS" yields building_name "Drifters".\n'
+        "- structures_affected: estimated count of damaged structures visible\n"
+        "- location_indicators: visible text, street signs, landmarks, or\n"
+        "  geographic features that could help identify the location\n"
+        "- named_entities: proper nouns visible or mentioned in audio —\n"
+        "  business names, organization names, place names. Separate from\n"
+        "  location_indicators (those are geographic clues; these are names).\n"
         "- infrastructure_impacts: list of infrastructure issues visible\n"
-        "- location_indicators: any text, signs, landmarks, building names visible\n"
+        '  (e.g. "road blocked by debris", "power lines down")\n'
+        "- visual_evidence_quality: one of [clear, partial, poor]\n"
+        "  (clear = damage clearly visible, partial = partially obscured,\n"
+        "  poor = hard to assess from footage)\n"
         "\n"
         f"Focus on: {focus}\n"
         "\n"
-        "Return a JSON object with a 'findings' array. Each finding should "
-        "cover one visually distinct damage area."
+        "Return a JSON object with a 'findings' array. Each finding covers "
+        "ONE visually distinct damage area — do not combine unrelated damage "
+        "into one finding."
     )
 
 

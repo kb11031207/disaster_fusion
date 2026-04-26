@@ -74,7 +74,7 @@ def main() -> int:
         print(f"--- Claim {i} ---")
         print(f"  source:   {c['source_document']} ({c['source_type']})")
         print(f"  location: {c['location_name']}")
-        print(f"  severity: {c['severity']}  category: {c['damage_category']}")
+        print(f"  severity: {c['severity']}  category: {c.get('damage_type') or c.get('damage_category')}")
         print(f"  cost:     {c['cost_estimate']}")
         print(f"  desc:     {c['damage_description'][:200]}")
         print()

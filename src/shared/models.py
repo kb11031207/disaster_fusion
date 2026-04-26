@@ -38,16 +38,19 @@ class VideoFinding:
 
     damage_type: str = "other"
     severity: str = "moderate"
-    description: str = ""
+    damage_description: str = ""
     structures_affected: Optional[int] = None
     building_type: Optional[str] = None
+    building_name: Optional[str] = None
 
     location_indicators: list[str] = field(default_factory=list)
+    named_entities: list[str] = field(default_factory=list)
     geo: Optional[tuple[float, float]] = None
     geo_method: Optional[str] = None
     geo_confidence: str = "unresolved"
 
     infrastructure_impacts: list[str] = field(default_factory=list)
+    visual_evidence_quality: str = "unknown"
 
     is_valid: bool = True
     validation_errors: list[str] = field(default_factory=list)
@@ -78,14 +81,28 @@ class ReportClaim:
     county_parish: Optional[str] = None
     state: Optional[str] = None
 
+    # Set by the geocoder (src/report_parser/geocoder.py).
+    # geo_confidence  in {"high","medium","low","unresolved"} or None pre-geocode
+    # geo_source      e.g. "overture_places", "overture_county",
+    #                 "overture_region", "unresolved"
+    geo_confidence: Optional[str] = None
+    geo_source: Optional[str] = None
+
     damage_description: str = ""
     severity: str = "moderate"
-    damage_category: Optional[str] = None
+    damage_type: Optional[str] = None
     cost_estimate: Optional[float] = None
     ef_rating: Optional[str] = None
 
+    event_type: Optional[str] = None
+    event_name: Optional[str] = None
     event_date: Optional[str] = None
     report_date: Optional[str] = None
+
+    building_type: Optional[str] = None
+    building_name: Optional[str] = None
+    structures_affected: Optional[int] = None
+    infrastructure_impacts: list[str] = field(default_factory=list)
 
     is_valid: bool = True
     validation_errors: list[str] = field(default_factory=list)

@@ -1,15 +1,19 @@
 """
 Video pipeline — ingest stage.
 
-Two responsibilities live here:
+Three responsibilities live here:
   1. `upload_video` — push a local MP4 to S3 (M2 step 2.1).
   2. `start_video_embedding` — kick off a Marengo async embedding job
      against an S3 video URI (M2 step 2.4). Returns the invocation ARN
      immediately; the caller polls / fetches output later.
+  3. `fetch_video_embeddings` — given a job record from (2), download the
+     Marengo `output.json` from S3 and reshape it into the project's
+     VideoSegment rows for downstream fusion.
 """
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -149,4 +153,130 @@ def start_video_embedding(
         "source_video": source_video,
         "embedding_options": embedding_options,
         "model_id": model_id,
+    }
+
+
+def _segment_id(source_video: str, modality: str, start_sec: float) -> str:
+    """
+    Stable 8-hex segment id derived from the (video, modality, startSec)
+    triple. Stable across re-runs as long as Marengo returns the same
+    segmentation, which lets us re-link fused findings to the same row.
+    """
+    raw = f"{source_video}|{modality}|{round(start_sec, 3)}".encode()
+    return "vs-" + hashlib.sha1(raw).hexdigest()[:8]
+
+
+def fetch_video_embeddings(
+    job: dict[str, Any],
+    region: Optional[str] = None,
+) -> dict[str, Any]:
+    """
+    Download the Marengo async output for a started job and reshape it
+    into the project's VideoSegment row format.
+
+    Marengo's raw output looks like:
+        {"data": [{"embedding": [...512 floats...],
+                   "embeddingOption": "visual" | "audio",
+                   "embeddingScope": "clip",
+                   "startSec": 0.0,
+                   "endSec":   4.75}, ...]}
+
+    We rewrite each row to:
+        {"segment_id":   "vs-<8 hex>",
+         "source_video": "<file>.mp4",
+         "modality":     "visual" | "audio",
+         "start_sec":    0.0,
+         "end_sec":      4.75,
+         "embedding":    [...512 floats...]}
+
+    The job record is the dict returned by `start_video_embedding`. The
+    invocation ARN's tail is used as the S3 sub-prefix (Bedrock writes
+    output to <prefix>/<arn-tail>/output.json).
+
+    Returns:
+        {"source_video":   "...",
+         "model_id":       "...",
+         "segment_count":  309,           # distinct (start_sec) values
+         "embedding_dim":  512,
+         "modalities":     ["visual","audio"],
+         "segments":       [ ...VideoSegment rows... ]}
+    """
+    region = region or os.environ.get("AWS_REGION", "us-east-1")
+    s3 = boto3.client("s3", region_name=region)
+
+    output_uri = job["output_s3_uri"]
+    if not output_uri.startswith("s3://"):
+        raise ValueError(f"Bad output_s3_uri: {output_uri!r}")
+    bucket, _, prefix = output_uri[len("s3://"):].partition("/")
+    if not prefix.endswith("/"):
+        prefix += "/"
+
+    # Bedrock async writes to <prefix>/<job-id>/output.json. The job-id is
+    # the tail of the invocation ARN. Listing is more robust than building
+    # the path ourselves in case Bedrock's layout drifts.
+    listing = s3.list_objects_v2(Bucket=bucket, Prefix=prefix)
+    keys = [obj["Key"] for obj in listing.get("Contents", [])
+            if obj["Key"].endswith("output.json")]
+    if not keys:
+        raise FileNotFoundError(
+            f"No output.json under s3://{bucket}/{prefix} — "
+            f"is the job actually Completed?"
+        )
+    if len(keys) > 1:
+        # Pick the one matching this ARN's tail; otherwise warn.
+        tail = job["invocation_arn"].rsplit("/", 1)[-1]
+        match = [k for k in keys if f"/{tail}/" in k]
+        if match:
+            keys = match
+        else:
+            print(f"WARNING: multiple output.json keys, using first: {keys}")
+
+    output_key = keys[0]
+    print(f"Fetching s3://{bucket}/{output_key}")
+    obj = s3.get_object(Bucket=bucket, Key=output_key)
+    raw = json.loads(obj["Body"].read())
+    rows = raw.get("data", [])
+    if not rows:
+        raise RuntimeError("Marengo output had empty 'data' array")
+
+    source_video = job["source_video"]
+    segments: list[dict[str, Any]] = []
+    embedding_dim: Optional[int] = None
+    modalities: set[str] = set()
+    starts: set[float] = set()
+
+    for r in rows:
+        modality = r["embeddingOption"]
+        start = float(r["startSec"])
+        end = float(r["endSec"])
+        emb = r["embedding"]
+        if embedding_dim is None:
+            embedding_dim = len(emb)
+        elif len(emb) != embedding_dim:
+            raise ValueError(
+                f"Inconsistent embedding dim: expected {embedding_dim}, "
+                f"got {len(emb)} at startSec={start}"
+            )
+        modalities.add(modality)
+        starts.add(round(start, 3))
+        segments.append({
+            "segment_id":   _segment_id(source_video, modality, start),
+            "source_video": source_video,
+            "modality":     modality,
+            "start_sec":    start,
+            "end_sec":      end,
+            "embedding":    emb,
+        })
+
+    # Sort: time-ordered, with modalities grouped per timestamp so a fusion
+    # writer can iterate visual+audio for the same clip side-by-side.
+    segments.sort(key=lambda s: (s["start_sec"], s["modality"]))
+
+    return {
+        "source_video":  source_video,
+        "model_id":      job.get("model_id"),
+        "segment_count": len(starts),
+        "embedding_dim": embedding_dim,
+        "modalities":    sorted(modalities),
+        "segments":      segments,
     }

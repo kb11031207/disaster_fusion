@@ -66,85 +66,101 @@ def detect_source_type(doc_text: str) -> str:
 # Prompt
 # ---------------------------------------------------------------------------
 
-_PROMPT_TEMPLATE = """You are a FEMA damage report analyst. You will be given the raw text of an
-official damage assessment document. It will be ONE of two types:
+_PROMPT_TEMPLATE = """You are a damage report analyst. You will be given the raw text of an
+official damage report. It may be any of:
 
-(A) PROJECT WORKSHEET (PW) — FEMA Form 009-0-91 covering ONE damaged asset.
-    Recognizable by headers: "PROJECT WORKSHEET", "DISASTER NUMBER",
-    "LOCATION / SITE OF DAMAGE", "DESCRIPTION OF DAMAGE", "SCOPE OF WORK",
-    "PROJECT COST ESTIMATE".
-
-(B) PRELIMINARY DAMAGE ASSESSMENT (PDA) — state-level rollup. Has counts of
-    residences (Destroyed / Major Damage / Minor Damage / Affected),
-    per-county per-capita impact dollars, and a narrative paragraph that
-    may name specific damaged assets.
+- NWS Damage Survey (EF rating, path length/width, wind estimates, per-location
+  damage descriptions)
+- County EMA report or press release (damage summaries, affected areas, response)
+- FEMA Project Worksheet (PW) — single damaged asset, has DISASTER NUMBER,
+  LOCATION / SITE OF DAMAGE, DESCRIPTION OF DAMAGE, PROJECT COST ESTIMATE
+- FEMA Preliminary Damage Assessment (PDA) — state/county rollups with
+  residence counts (Destroyed / Major / Minor / Affected) and per-county
+  per-capita dollars
+- News report (interviews, damage descriptions, named businesses)
+- Insurance / adjuster summary
 
 EXTRACTION RULES
 ================
 
-If the document is a PROJECT WORKSHEET:
+ONE CLAIM PER DAMAGED LOCATION OR STRUCTURE. If a report mentions three
+damaged buildings, return three separate claim rows. Do not merge them.
+
+For PROJECT WORKSHEETs:
 - Return exactly ONE row.
-- location_name: the address/asset description from LOCATION / SITE OF DAMAGE.
-- damage_description: extract from the DESCRIPTION OF DAMAGE section verbatim
-  or near-verbatim. Preserve technical wording: "storm surge", "displaced",
-  "inundated", "rendered inoperable", "complete failure". Do NOT paraphrase
-  these — Marengo will text-embed this string and match it against video.
-- cost_estimate: the TOTAL PROJECT COST as an integer (no $, no commas).
-- report_date: from "DATE PREPARED".
+- location_name from LOCATION / SITE OF DAMAGE; damage_description from
+  DESCRIPTION OF DAMAGE (preserve wording verbatim — Marengo will embed
+  it). cost_estimate = TOTAL PROJECT COST as integer.
 
-If the document is a PRELIMINARY DAMAGE ASSESSMENT:
-- Return ONE row per county that appears in the "Countywide per capita impact"
-  line.
-- ALSO return ONE row per specific asset named in the narrative paragraph
-  (e.g. "Mobile State Docks", "Bay St. Louis Bridge"). Skip generic phrases
-  like "homes along the coast".
-- For county rows: location_name = "<County> County, <State>";
-  damage_description synthesizes the narrative + residence counts
-  ("Storm surge damage; 18,940 residences destroyed, 24,600 with major damage,
-  per FEMA PDA"); cost_estimate = null unless an exact dollar figure is
-  attributed to THAT county.
-- For named-asset rows: location_name = asset + city/state; damage_description
-  = the sentence(s) in the narrative describing it.
-- report_date: from "Declared <date>".
+For PDAs:
+- Return ONE row per county in "Countywide per capita impact".
+- ALSO return ONE row per specific asset named in the narrative
+  (e.g. "Mobile State Docks"). Skip generic phrases ("homes along the coast").
+- County rows: location_name = "<County> County, <State>".
 
-SEVERITY ENUM (FEMA's own definitions):
-- "Destroyed" / "total loss" / "catastrophic" / "complete failure" -> destroyed
-- "Major Damage" / "substantial failure" / "severe"                -> severe
-- "Affected" / "moderate" / "significant damage"                   -> moderate
-- "Minor Damage"                                                   -> minor
+For NWS surveys / news / EMA reports:
+- Return ONE row per identifiable damaged location or business.
+- Pull building_name aggressively — "Drifters Eats and Drinks", "St. Mary's
+  Hospital". Matching on name is the strongest fusion signal.
 
-For aggregate rows mixing severities, use the highest severity that has
->10% of the total count.
+DAMAGE_TYPE ENUM (pick the MOST SEVERE if multiple apply; mention the others
+in damage_description):
+structural_collapse | roof_damage | debris_field | vegetation_damage |
+infrastructure_damage | vehicle_damage | window_door_damage | flooding | other
 
-DAMAGE_CATEGORY ENUM:
-structural_collapse | roof_damage | flooding | debris_field |
-infrastructure_damage | vegetation_damage | vehicle_damage |
-fire_damage | erosion | other
+Mappings:
+- "blown out", "windows out", "patio doors gone" -> window_door_damage
+- "roof off", "roof torn", "rafters exposed" -> roof_damage
+- "flattened", "leveled", "walls down" -> structural_collapse
+- "trees uprooted", "branches down" -> vegetation_damage
+- "power lines down", "poles snapped", "road impassable" -> infrastructure_damage
 
-Pick the dominant category. A flooded hospital with destroyed electrical
-systems -> flooding (the primary cause). A bridge with displaced spans ->
-infrastructure_damage. A coastal area with washed-away buildings -> flooding.
+SEVERITY ENUM:
+- minor    : cosmetic, still functional ("minor damage", EF0)
+- moderate : significant, partially usable ("moderate", EF1)
+- severe   : major structural, unusable ("severe", "destroyed", EF2)
+- destroyed: total loss, structure gone ("leveled", "total destruction", EF3+)
+
+EF -> severity (default if narrative is silent):
+EF0 -> minor; EF1 -> moderate (or severe if narrative says "significant"/"extensive");
+EF2 -> severe; EF3+ -> destroyed.
+
+BUILDING_TYPE ENUM:
+residential | commercial | industrial | public | infrastructure |
+agricultural | unknown
 
 OUTPUT (return ONLY this JSON shape, no markdown fences, no prose):
 {{
   "claims": [
     {{
-      "location_name": "<specific>",
-      "damage_description": "<doc's wording>",
-      "severity": "<enum>",
-      "damage_category": "<enum>",
-      "cost_estimate": <integer or null>,
+      "event_type": "<tornado | hurricane | flood | wildfire | earthquake>",
+      "event_name": "<e.g. Grafton EF1 Tornado, or null>",
       "event_date": "<YYYY-MM-DD or null>",
-      "report_date": "<YYYY-MM-DD or null>"
+      "report_date": "<YYYY-MM-DD or null>",
+
+      "location_name": "<specific address / asset name + city, state>",
+
+      "damage_type": "<enum>",
+      "severity": "<enum>",
+      "damage_description": "<doc's wording, preserve technical terms>",
+
+      "building_type": "<enum>",
+      "building_name": "<specific business/structure name or null>",
+      "structures_affected": <integer or null>,
+
+      "infrastructure_impacts": ["<short phrase>", ...],
+
+      "ef_rating": "<EF0|EF1|EF2|EF3|EF4|EF5 or null>",
+      "cost_estimate": <integer or null>
     }}
   ]
 }}
 
 CONVENTIONS:
-- For Hurricane Katrina docs, event_date = 2005-08-29 unless the doc says
-  otherwise (Katrina's main landfall date).
+- For Hurricane Katrina docs, event_date = 2005-08-29 if not stated.
 - cost_estimate: integers only. $47.4M -> 47400000.
-- If a field is missing from the doc, use null. Do not invent values.
+- If a field is missing, use null. Do not invent values.
+- infrastructure_impacts: empty list [] if none mentioned.
 
 DOCUMENT TEXT:
 <<<
@@ -248,6 +264,9 @@ def parse_report(report_path: str | Path) -> list[ReportClaim]:
     raw_claims: list[dict[str, Any]] = parsed.get("claims") or []
     claims: list[ReportClaim] = []
     for raw in raw_claims:
+        impacts = raw.get("infrastructure_impacts") or []
+        if not isinstance(impacts, list):
+            impacts = []
         claim = ReportClaim(
             claim_id=generate_id("rc"),
             source_document=path.name,
@@ -255,10 +274,17 @@ def parse_report(report_path: str | Path) -> list[ReportClaim]:
             location_name=(raw.get("location_name") or "").strip(),
             damage_description=(raw.get("damage_description") or "").strip(),
             severity=raw.get("severity") or "moderate",
-            damage_category=raw.get("damage_category") or "other",
+            damage_type=raw.get("damage_type") or raw.get("damage_category") or "other",
             cost_estimate=raw.get("cost_estimate"),
+            ef_rating=raw.get("ef_rating"),
+            event_type=raw.get("event_type"),
+            event_name=raw.get("event_name"),
             event_date=raw.get("event_date"),
             report_date=raw.get("report_date"),
+            building_type=raw.get("building_type"),
+            building_name=raw.get("building_name"),
+            structures_affected=raw.get("structures_affected"),
+            infrastructure_impacts=[str(x) for x in impacts if x],
         )
         claims.append(claim)
 

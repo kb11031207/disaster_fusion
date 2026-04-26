@@ -18,15 +18,16 @@ from src.shared.utils import generate_id
 
 
 _DAMAGE_TYPES = {
-    "structural_collapse", "roof_damage", "flooding",
-    "debris_field", "infrastructure_damage", "vegetation_damage",
-    "vehicle_damage", "fire_damage", "erosion", "other",
+    "structural_collapse", "roof_damage", "debris_field",
+    "vegetation_damage", "infrastructure_damage", "vehicle_damage",
+    "window_door_damage", "flooding", "other",
 }
 _SEVERITIES = {"minor", "moderate", "severe", "destroyed"}
 _BUILDING_TYPES = {
-    "residential", "commercial", "industrial",
-    "public", "infrastructure", "unknown",
+    "residential", "commercial", "industrial", "public",
+    "infrastructure", "agricultural", "unknown",
 }
+_VISUAL_QUALITIES = {"clear", "partial", "poor"}
 
 _DESCRIPTION_MIN_CHARS = 10
 _DESCRIPTION_MAX_CHARS = 2000
@@ -59,14 +60,28 @@ def _validate_one(raw: dict[str, Any]) -> tuple[dict[str, Any], list[str]]:
     else:
         out["severity"] = sev
 
-    # description — required, length-checked
-    desc = (raw.get("description") or "").strip()
+    # damage_description — required, length-checked. Accept legacy `description`.
+    desc = (raw.get("damage_description") or raw.get("description") or "").strip()
     if len(desc) < _DESCRIPTION_MIN_CHARS:
-        errors.append(f"description too short ({len(desc)} chars)")
+        errors.append(f"damage_description too short ({len(desc)} chars)")
     elif len(desc) > _DESCRIPTION_MAX_CHARS:
-        errors.append(f"description too long ({len(desc)} chars), truncated")
+        errors.append(f"damage_description too long ({len(desc)} chars), truncated")
         desc = desc[:_DESCRIPTION_MAX_CHARS]
-    out["description"] = desc
+    out["damage_description"] = desc
+
+    # building_name — optional string
+    bn = raw.get("building_name")
+    out["building_name"] = bn.strip() if isinstance(bn, str) and bn.strip() else None
+
+    # visual_evidence_quality — optional enum
+    vq = raw.get("visual_evidence_quality")
+    if vq is None:
+        out["visual_evidence_quality"] = "unknown"
+    elif vq not in _VISUAL_QUALITIES:
+        errors.append(f"unknown visual_evidence_quality {vq!r}")
+        out["visual_evidence_quality"] = "unknown"
+    else:
+        out["visual_evidence_quality"] = vq
 
     # structures_affected — optional int
     sa = raw.get("structures_affected")
@@ -93,7 +108,9 @@ def _validate_one(raw: dict[str, Any]) -> tuple[dict[str, Any], list[str]]:
         out["building_type"] = bt
 
     # list-typed optional fields
-    for list_field in ("infrastructure_impacts", "location_indicators"):
+    for list_field in (
+        "infrastructure_impacts", "location_indicators", "named_entities",
+    ):
         val = raw.get(list_field)
         if val is None:
             out[list_field] = []
@@ -132,11 +149,14 @@ def validate_findings(
             capture_date_source="user_supplied",
             damage_type=clean["damage_type"],
             severity=clean["severity"],
-            description=clean["description"],
+            damage_description=clean["damage_description"],
             structures_affected=clean["structures_affected"],
             building_type=clean["building_type"],
+            building_name=clean["building_name"],
             location_indicators=clean["location_indicators"],
+            named_entities=clean["named_entities"],
             infrastructure_impacts=clean["infrastructure_impacts"],
+            visual_evidence_quality=clean["visual_evidence_quality"],
             is_valid=(len(errors) == 0),
             validation_errors=errors,
         )
