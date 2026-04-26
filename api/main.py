@@ -29,9 +29,15 @@ sys.path.insert(0, str(_PROJECT_ROOT))
 
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel
 
 from api.job_store       import store
+from api.nl_query        import query_findings
 from api.pipeline_runner import run_pipeline
+
+
+class QueryRequest(BaseModel):
+    question: str
 
 app = FastAPI(title="DisasterFusion API", version="1.0.0")
 
@@ -121,7 +127,51 @@ def job_overture(job_id: str):
     return job.overture or {"type": "FeatureCollection", "features": []}
 
 
+@app.post("/jobs/{job_id}/query")
+def job_query(job_id: str, req: QueryRequest):
+    """
+    Natural language query over a job's fused findings.
+
+    Body: { "question": "..." }
+    Returns: { "answer": "...", "referenced_ids": [...], "query_type": "..." }
+    """
+    job = store.get(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found.")
+    if job.status != "done":
+        raise HTTPException(status_code=202, detail=f"Job is {job.status}: {job.progress}")
+    if not job.results or not job.results.get("findings"):
+        raise HTTPException(status_code=404, detail="No findings available to query.")
+
+    return query_findings(req.question, job.results["findings"])
+
+
 @app.get("/jobs")
 def list_jobs():
     """List all jobs (for debugging)."""
     return store.all()
+
+
+@app.post("/test/parse-url")
+def test_parse_url(req: QueryRequest):
+    """
+    Test endpoint: extract damage claims from a news article URL.
+
+    Body: { "question": "https://example.com/article" }
+    Returns: { "claims": [...], "count": N, "source": "url" }
+    """
+    url = req.question.strip()
+    if not url.startswith(("http://", "https://")):
+        raise HTTPException(status_code=400, detail="Must provide a valid HTTP(S) URL.")
+
+    from src.report_parser.parser import fetch_and_parse_url
+
+    try:
+        claims = fetch_and_parse_url(url, source_type="news_report")
+        return {
+            "claims": [c.to_dict() for c in claims],
+            "count": len(claims),
+            "source": url,
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Parse failed: {str(e)}")

@@ -73,6 +73,34 @@ def upload_video(local_path: str | Path, capture_date: str) -> dict[str, Any]:
     }
 
 
+def generate_presigned_url(s3_uri: str, expiry_seconds: int = 3600) -> str:
+    """
+    Generate a presigned URL for an S3 object so the frontend can stream
+    the video directly without needing AWS credentials.
+
+    Args:
+        s3_uri:         e.g. "s3://bucket/videos/foo.mp4"
+        expiry_seconds: how long the URL stays valid (default 1 hour)
+
+    Returns:
+        HTTPS presigned URL string
+    """
+    if not s3_uri.startswith("s3://"):
+        raise ValueError(f"Expected s3:// URI, got: {s3_uri}")
+
+    without_prefix = s3_uri[len("s3://"):]
+    bucket, key    = without_prefix.split("/", 1)
+    region         = os.environ.get("AWS_REGION", "us-east-1")
+
+    s3  = boto3.client("s3", region_name=region)
+    url = s3.generate_presigned_url(
+        "get_object",
+        Params={"Bucket": bucket, "Key": key},
+        ExpiresIn=expiry_seconds,
+    )
+    return url
+
+
 def start_video_embedding(
     s3_uri: str,
     source_video: str,

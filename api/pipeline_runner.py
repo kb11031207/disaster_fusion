@@ -16,9 +16,18 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import tempfile
 import time
 from pathlib import Path
+
+
+def _safe_filename(name: str) -> str:
+    """Strip characters that Bedrock's async-invoke S3 fetch chokes on."""
+    stem = Path(name).stem
+    suffix = Path(name).suffix
+    stem = re.sub(r"[^A-Za-z0-9._-]+", "_", stem).strip("._-") or "video"
+    return f"{stem}{suffix}"
 
 import boto3
 import numpy as np
@@ -85,11 +94,15 @@ def _extract_text_from_bytes(filename: str, content: bytes) -> str:
     return content.decode("utf-8", errors="replace")
 
 
-def _bbox_from_findings(findings: list[dict]) -> tuple[float, float, float, float]:
-    lats = [f["lat"] for f in findings if f.get("lat") is not None]
-    lons = [f["lon"] for f in findings if f.get("lon") is not None]
-    pad  = 0.01
-    return (min(lats) - pad, min(lons) - pad, max(lats) + pad, max(lons) + pad)
+def _bbox_from_coords(*sources: list[dict]) -> tuple[float, float, float, float] | None:
+    """Build a padded bbox from the first source that has any lat/lon."""
+    for items in sources:
+        lats = [x["lat"] for x in items if x.get("lat") is not None]
+        lons = [x["lon"] for x in items if x.get("lon") is not None]
+        if lats and lons:
+            pad = 0.01
+            return (min(lats) - pad, min(lons) - pad, max(lats) + pad, max(lons) + pad)
+    return None
 
 
 def run_pipeline(
@@ -118,15 +131,17 @@ def _run(
     report_bytes:    bytes,
     location_hint:   str,
 ) -> None:
-    from src.video_pipeline.ingest        import upload_video, start_video_embedding, fetch_video_embeddings
+    from src.video_pipeline.ingest        import upload_video, start_video_embedding, fetch_video_embeddings, generate_presigned_url
     from src.video_pipeline.pegasus_analysis import analyze_video
     from src.video_pipeline.validation    import validate_findings
     from src.video_pipeline.geo_simulator import geolocate_findings
     from src.report_parser.parser         import parse_report
+    from src.report_parser.geocoder       import geocode_claims
     from src.fusion.pass_a                import run_pass_a
     from src.fusion.pass_b                import fuse, text_similarity_matrix
     from src.fusion.text_embed            import embed_texts
     from src.output.frontend_schema       import transform
+    from src.output.alerts                import check_and_alert
 
     bucket        = os.environ["S3_BUCKET"]
     videos_prefix = os.environ.get("S3_VIDEOS_PATH", "videos").strip("/")
@@ -134,15 +149,20 @@ def _run(
 
     # ---- 1. Upload video to S3 ------------------------------------------
     _set(job, "Uploading video to S3...")
-    with tempfile.NamedTemporaryFile(suffix=Path(video_filename).suffix, delete=False) as tmp:
-        tmp.write(video_bytes)
-        tmp_path = Path(tmp.name)
+    safe_name = _safe_filename(video_filename)
+    if safe_name != video_filename:
+        print(f"[{job.job_id}] sanitized filename: {video_filename!r} -> {safe_name!r}")
+    video_filename = safe_name
+    tmp_dir  = Path(tempfile.mkdtemp())
+    tmp_path = tmp_dir / video_filename
     try:
-        upload_video(tmp_path, capture_date=time.strftime("%Y-%m-%d"))
+        tmp_path.write_bytes(video_bytes)
+        upload_info = upload_video(tmp_path, capture_date=time.strftime("%Y-%m-%d"))
     finally:
         tmp_path.unlink(missing_ok=True)
+        tmp_dir.rmdir()
 
-    s3_uri = f"s3://{bucket}/{videos_prefix}/{video_filename}"
+    s3_uri = upload_info["s3_uri"]
 
     # ---- 2. Pegasus analysis --------------------------------------------
     _set(job, "Running Pegasus video analysis (this takes a few minutes)...")
@@ -152,16 +172,65 @@ def _run(
     _set(job, "Validating findings and geolocating...")
     findings_objs = validate_findings(raw, video_filename, time.strftime("%Y-%m-%d"))
     finding_dicts = [f.to_dict() for f in findings_objs]
-    finding_dicts, zone = geolocate_findings(finding_dicts, hint=location_hint or None)
+
+    # Try to geocode the operator hint via Overture so we never depend on
+    # Claude's flaky guess for the centre when an authoritative place name
+    # is already on hand.
+    centre_override = None
+    if location_hint:
+        try:
+            hint_hit = geocode_claims([{"location_name": location_hint}])
+            if hint_hit and hint_hit[0].get("lat") is not None:
+                centre_override = (hint_hit[0]["lat"], hint_hit[0]["lon"])
+                print(f"[{job.job_id}] hint geocoded via Overture: {centre_override}")
+        except Exception as e:
+            print(f"[{job.job_id}] hint geocode failed (non-fatal): {e}")
+
+    try:
+        finding_dicts, zone = geolocate_findings(
+            finding_dicts,
+            hint=location_hint or None,
+            centre_override=centre_override,
+        )
+        centre = zone.get("centre")
+    except Exception as e:
+        print(f"[{job.job_id}] geolocate_findings failed (non-fatal): {e}")
+        centre = None
+        zone = {"primary_location": location_hint, "centre": None, "method": "failed"}
+
+    # Pin all findings to the centre (no random scatter). If centre is missing,
+    # findings stay coord-less and will get coords from geocoded report claims
+    # during fusion.
+    if centre and len(centre) == 2 and centre[0] is not None and centre[1] is not None:
+        for f in finding_dicts:
+            f["lat"] = centre[0]
+            f["lon"] = centre[1]
+        print(f"[{job.job_id}] pinned video findings to centre {centre}")
+    else:
+        print(f"[{job.job_id}] no usable centre — video findings left without coords (will inherit from report claims)")
 
     # ---- 4. Parse report ------------------------------------------------
     _set(job, "Parsing damage report with Claude...")
-    report_text = _extract_text_from_bytes(report_filename, report_bytes)
-    claims = parse_report(report_text)
+    report_tmp_dir = Path(tempfile.mkdtemp())
+    report_tmp_path = report_tmp_dir / report_filename
+    try:
+        report_tmp_path.write_bytes(report_bytes)
+        claims = parse_report(report_tmp_path)
+    finally:
+        report_tmp_path.unlink(missing_ok=True)
+        report_tmp_dir.rmdir()
     claim_dicts = [c.to_dict() for c in claims]
 
     if not claim_dicts:
         job.progress = "Warning: no claims extracted from report — continuing with video only."
+    else:
+        _set(job, "Geocoding report claim addresses via Overture...")
+        try:
+            claim_dicts = geocode_claims(claim_dicts)
+            geocoded = sum(1 for c in claim_dicts if c.get("lat") is not None)
+            print(f"[{job.job_id}] geocoded {geocoded}/{len(claim_dicts)} claim addresses")
+        except Exception as e:
+            print(f"[{job.job_id}] geocoding failed (non-fatal): {e}")
 
     # ---- 5. Marengo async embed -----------------------------------------
     _set(job, "Starting Marengo video embedding...")
@@ -209,14 +278,46 @@ def _run(
     # ---- 8. Frontend transform ------------------------------------------
     _set(job, "Building frontend response...")
     result = transform(fused_doc)
+
+    # Populate clip_url on every finding that has a video block.
+    # Presigned URL is valid for 2 hours — enough for any demo session.
+    clip_url = None
+    clip_url_error = None
+    try:
+        clip_url = generate_presigned_url(s3_uri, expiry_seconds=7200)
+        print(f"[{job.job_id}] presigned clip_url generated: {clip_url[:80]}...")
+    except Exception as e:
+        clip_url_error = f"presign_failed: {type(e).__name__}: {e}"
+        print(f"[{job.job_id}] CLIP URL FAILED: {clip_url_error}")
+
+    for finding in result["findings"]:
+        if finding.get("video"):
+            finding["video"]["clip_url"] = clip_url
+            if clip_url_error:
+                finding["video"]["clip_url_error"] = clip_url_error
+
     job.results = result
+
+    # ---- 8b. SNS alerts -------------------------------------------------
+    _set(job, "Checking for critical findings...")
+    check_and_alert(
+        result["findings"],
+        event_name=location_hint or "Tornado Assessment",
+        location=location_hint,
+    )
 
     # ---- 9. Overture GeoJSON for this event's bbox ----------------------
     if result["findings"]:
         _set(job, "Fetching Overture map reference data...")
         try:
             from scripts.m6_overture_geojson import query_places, query_buildings, query_roads, _connect
-            min_lat, min_lon, max_lat, max_lon = _bbox_from_findings(result["findings"])
+            # Prefer geocoded claim coords (real Overture lookups) over fused
+            # findings (which may carry an LLM-guessed centre).
+            bbox = _bbox_from_coords(claim_dicts, result["findings"])
+            if bbox is None:
+                raise RuntimeError("no lat/lon available for Overture bbox")
+            min_lat, min_lon, max_lat, max_lon = bbox
+            print(f"[{job.job_id}] Overture bbox: {bbox}")
             con      = _connect()
             features = (
                 query_places(con, min_lat, min_lon, max_lat, max_lon)

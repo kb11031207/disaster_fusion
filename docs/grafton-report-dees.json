@@ -1,0 +1,40 @@
+{
+  "report_metadata": {
+    "source_id": "src-004",
+    "source_type": "news_report",
+    "source_name": "First Alert 4 — Dees Riverside Retreat One-Week Follow-up",
+    "report_date": "2026-03-18",
+    "source_url": "https://www.firstalert4.com/2026/03/19/grafton-event-space-owner-working-recover-after-third-property-damaged-by-tornado-year/",
+    "reporter_context": "Follow-up interview with owner Denyse Hill one week after tornado"
+  },
+  "event": {
+    "event_name": "Grafton EF1 Tornado",
+    "event_type": "tornado",
+    "event_date": "2026-03-11",
+    "location": "Grafton, Jersey County, Illinois"
+  },
+  "claims": [
+    {
+      "claim_id": "rc-news-003",
+      "location_name": "Dees Riverside Retreat, Grafton, IL",
+      "location_county": "Jersey County",
+      "location_state": "IL",
+      "lat": null,
+      "lon": null,
+      "damage_type": "structural_collapse",
+      "severity": "severe",
+      "damage_description": "Entire roof section from neighboring building (Drifters) was dislodged by tornado and flew into the property. Roof bent in half and found inside the property. Structural damage to building envelope. Front boarded up, roof covered with temporary protection one week after event. Three guest rooms were occupied during tornado, no injuries reported.",
+      "building_type": "commercial",
+      "building_name": "Dees Riverside Retreat",
+      "structures_affected": 1,
+      "infrastructure_impacts": [],
+      "injuries": 0,
+      "fatalities": 0,
+      "cost_estimate": null,
+      "operational_status": "closed",
+      "additional_context": "Combined Airbnb and event space opened in 2021. Owner Denyse Hill hopes to reopen in a couple of months. This is the third weather-related property damage for the owner — two rental properties in north St. Louis City were also damaged in the May 16, 2025 tornado. Hill described the damage as devastating and expressed concern about repair costs.",
+      "is_valid": true,
+      "validation_errors": []
+    }
+  ]
+}

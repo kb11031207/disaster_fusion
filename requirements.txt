@@ -29,6 +29,9 @@ fastapi>=0.110.0
 uvicorn[standard]>=0.29.0
 python-multipart>=0.0.9
 
+# HTTP client for URL fetching
+httpx>=0.24.0
+
 # Notes:
 # - DOCX text extraction uses stdlib zipfile + regex — no python-docx dep.
 # - Claude is called via Bedrock (boto3) — no anthropic SDK dep.

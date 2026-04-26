@@ -42,7 +42,7 @@ exports/*.pdf
 .streamlit/secrets.toml
 data/raw/videos/SOURCES.md
 /data/raw/reports
-/docs
+
 /.whodare
 /.claude
 *.md

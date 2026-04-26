@@ -192,6 +192,12 @@ def extract_location(
     centre = data.get("estimated_center")
     if not (isinstance(centre, list) and len(centre) == 2):
         raise RuntimeError(f"extract_location: bad estimated_center in {data!r}")
+    try:
+        data["estimated_center"] = [float(centre[0]), float(centre[1])]
+    except (TypeError, ValueError) as e:
+        raise RuntimeError(
+            f"extract_location: estimated_center values not numeric: {centre!r} ({e})"
+        )
 
     # Normalize landmark shape — accept only well-formed entries.
     raw_lms = data.get("landmarks") or []
@@ -305,13 +311,24 @@ def geolocate_findings(
     descriptions = [f.get("damage_description", "") for f in findings]
 
     if centre_override is not None:
-        info = {
-            "primary_location": hint or "operator-supplied",
-            "landmarks": [],
-            "area_type": DEFAULT_AREA_TYPE,
-            "confidence": "high",
-            "estimated_center": list(centre_override),
-        }
+        try:
+            override_centre = [float(centre_override[0]), float(centre_override[1])]
+        except (TypeError, ValueError, IndexError):
+            override_centre = None
+        if override_centre is None:
+            print(
+                f"geolocate_findings: centre_override {centre_override!r} not "
+                "numeric — falling back to LLM extraction"
+            )
+            info = extract_location(descriptions, hint=hint)
+        else:
+            info = {
+                "primary_location": hint or "operator-supplied",
+                "landmarks": [],
+                "area_type": DEFAULT_AREA_TYPE,
+                "confidence": "high",
+                "estimated_center": override_centre,
+            }
     else:
         info = extract_location(descriptions, hint=hint)
 

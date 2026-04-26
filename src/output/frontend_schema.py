@@ -208,6 +208,12 @@ def _transform_one(row: dict) -> Optional[dict]:
 
     evidence_segs = row.get("evidence_segments") or []
 
+    event_date = (
+        (rc.get("event_date") if rc else None)
+        or (vf.get("capture_date") if vf else None)
+        or None
+    )
+
     return {
         "id":             row.get("finding_id", ""),
         "entity_name":    _entity_name(rc, vf),
@@ -216,6 +222,7 @@ def _transform_one(row: dict) -> Optional[dict]:
         "address":        (rc.get("location_name") if rc else None) or "",
         "lat":            lat,
         "lon":            lon,
+        "event_date":     event_date,
         "final_severity": severity,
         "fusion_status":  fusion_status,
         "confidence":     row.get("confidence_score", 0.0),

@@ -10,12 +10,14 @@ Geocoding (location_name -> lat/lon) lives in geocoder.py and runs after.
 
 from __future__ import annotations
 
+import base64
 import json
 import os
 import re
 import zipfile
 from pathlib import Path
 from typing import Any, Optional
+from urllib.parse import urlparse
 
 import boto3
 
@@ -177,23 +179,41 @@ def _call_claude_bedrock(
     prompt: str,
     region: Optional[str] = None,
     model_id: Optional[str] = None,
+    pdf_bytes: Optional[bytes] = None,
 ) -> str:
     """
     Send a prompt to Claude on Bedrock and return the raw text response.
-    Falls back to the regional inference profile prefix (us.) if the bare
-    model ID 400s — Bedrock requires the prefix for some models.
+    If pdf_bytes is provided, attach it as a base64 document block so Claude
+    parses the PDF natively (no pdfplumber dep). Falls back to the regional
+    inference profile prefix (us.) if the bare model ID 400s.
     """
     region = region or os.environ.get("AWS_REGION", "us-east-1")
     model_id = model_id or os.environ.get(
         "CLAUDE_MODEL_ID", "anthropic.claude-haiku-4-5-20251001-v1:0"
     )
 
+    if pdf_bytes is not None:
+        import base64
+        content = [
+            {
+                "type": "document",
+                "source": {
+                    "type": "base64",
+                    "media_type": "application/pdf",
+                    "data": base64.standard_b64encode(pdf_bytes).decode("ascii"),
+                },
+            },
+            {"type": "text", "text": prompt},
+        ]
+    else:
+        content = prompt
+
     bedrock = boto3.client("bedrock-runtime", region_name=region)
     body = {
         "anthropic_version": "bedrock-2023-05-31",
         "max_tokens": 4096,
         "temperature": 0,
-        "messages": [{"role": "user", "content": prompt}],
+        "messages": [{"role": "user", "content": content}],
     }
 
     try:
@@ -208,7 +228,7 @@ def _call_claude_bedrock(
         msg = str(e)
         if not model_id.startswith("us.") and "inference profile" in msg.lower():
             print(f"  retrying with us. prefix...")
-            return _call_claude_bedrock(prompt, region, "us." + model_id)
+            return _call_claude_bedrock(prompt, region, "us." + model_id, pdf_bytes)
         raise
 
     payload = json.loads(resp["body"].read())
@@ -235,33 +255,11 @@ def _strip_json_fences(text: str) -> str:
 # Public entry point
 # ---------------------------------------------------------------------------
 
-def parse_report(report_path: str | Path) -> list[ReportClaim]:
-    """
-    Extract structured ReportClaim rows from a FEMA DOCX.
-    No geocoding here — that's a separate step; lat/lon stay None.
-    """
-    path = Path(report_path).resolve()
-    if not path.is_file():
-        raise FileNotFoundError(f"Report not found: {path}")
-
-    print(f"Parsing {path.name} ...")
-    doc_text = extract_docx_text(path)
-    source_type = detect_source_type(doc_text)
-    print(f"  text length: {len(doc_text)} chars")
-    print(f"  source_type: {source_type}")
-
-    prompt = _PROMPT_TEMPLATE.format(document_text=doc_text)
-    raw_response = _call_claude_bedrock(prompt)
-    json_text = _strip_json_fences(raw_response)
-
-    try:
-        parsed = json.loads(json_text)
-    except json.JSONDecodeError as e:
-        print(f"  JSON parse failed: {e}")
-        print(f"  raw response head: {raw_response[:500]}")
-        raise
-
-    raw_claims: list[dict[str, Any]] = parsed.get("claims") or []
+def _build_claims(
+    raw_claims: list[dict[str, Any]],
+    source_document: str,
+    source_type: str,
+) -> list[ReportClaim]:
     claims: list[ReportClaim] = []
     for raw in raw_claims:
         impacts = raw.get("infrastructure_impacts") or []
@@ -269,7 +267,7 @@ def parse_report(report_path: str | Path) -> list[ReportClaim]:
             impacts = []
         claim = ReportClaim(
             claim_id=generate_id("rc"),
-            source_document=path.name,
+            source_document=source_document,
             source_type=source_type,
             location_name=(raw.get("location_name") or "").strip(),
             damage_description=(raw.get("damage_description") or "").strip(),
@@ -287,6 +285,155 @@ def parse_report(report_path: str | Path) -> list[ReportClaim]:
             infrastructure_impacts=[str(x) for x in impacts if x],
         )
         claims.append(claim)
+    return claims
 
+
+def parse_report(report_path: str | Path) -> list[ReportClaim]:
+    """
+    Extract structured ReportClaim rows from a damage report.
+
+    Supported inputs:
+      - .docx  → extract text and run Claude on Bedrock
+      - .pdf   → pass raw bytes to Claude as a document block (native parsing)
+      - .json  → already-structured claims; load directly, skip Claude
+      - .txt / .csv / .md → read as plain text and run Claude
+    """
+    path = Path(report_path).resolve()
+    if not path.is_file():
+        raise FileNotFoundError(f"Report not found: {path}")
+
+    suffix = path.suffix.lower()
+    print(f"Parsing {path.name} ...")
+
+    if suffix == ".json":
+        parsed = json.loads(path.read_text(encoding="utf-8", errors="replace"))
+        raw_claims: list[dict[str, Any]] = parsed.get("claims") or []
+        sources = parsed.get("sources") or []
+        source_type = (sources[0].get("source_type") if sources else None) or "json"
+        claims = _build_claims(raw_claims, path.name, source_type)
+        print(f"  loaded {len(claims)} claim(s) from JSON (Claude skipped)")
+        return claims
+
+    pdf_bytes: Optional[bytes] = None
+    if suffix == ".pdf":
+        pdf_bytes = path.read_bytes()
+        # Claude parses the PDF itself; we can't sniff PW vs PDA up front.
+        source_type = "PDA"
+        print(f"  pdf bytes: {len(pdf_bytes)} (Claude will parse natively)")
+        prompt = _PROMPT_TEMPLATE.format(document_text="(see attached PDF)")
+    else:
+        if suffix == ".docx":
+            doc_text = extract_docx_text(path)
+        elif suffix in (".txt", ".csv", ".md"):
+            doc_text = path.read_text(encoding="utf-8", errors="replace")
+        else:
+            raise ValueError(f"Unsupported report format: {suffix}")
+
+        source_type = detect_source_type(doc_text)
+        print(f"  text length: {len(doc_text)} chars")
+        print(f"  source_type: {source_type}")
+        prompt = _PROMPT_TEMPLATE.format(document_text=doc_text)
+
+    raw_response = _call_claude_bedrock(prompt, pdf_bytes=pdf_bytes)
+    json_text = _strip_json_fences(raw_response)
+
+    try:
+        parsed = json.loads(json_text)
+    except json.JSONDecodeError as e:
+        print(f"  JSON parse failed: {e}")
+        print(f"  raw response head: {raw_response[:500]}")
+        raise
+
+    raw_claims = parsed.get("claims") or []
+    claims = _build_claims(raw_claims, path.name, source_type)
     print(f"  Claude returned {len(claims)} claim(s)")
     return claims
+
+
+def parse_text(
+    raw_text: str,
+    source_name: str = "raw_text",
+    source_type: str = "news_report",
+) -> list[ReportClaim]:
+    """
+    Extract structured ReportClaim rows from plain text.
+    No file needed — pass article/report text directly.
+
+    Args:
+        raw_text: plain-text content (article, news report, etc.)
+        source_name: human-readable source (e.g., "First Alert 4 — Grafton tornado")
+        source_type: "news_report" | "nws_survey" | "county_ema" | "fema_pda"
+
+    Returns:
+        list[ReportClaim]
+    """
+    print(f"Parsing text from {source_name!r} ({source_type})...")
+    print(f"  text length: {len(raw_text)} chars")
+
+    source_type_sniff = detect_source_type(raw_text)
+    prompt = _PROMPT_TEMPLATE.format(document_text=raw_text)
+    raw_response = _call_claude_bedrock(prompt)
+    json_text = _strip_json_fences(raw_response)
+
+    try:
+        parsed = json.loads(json_text)
+    except json.JSONDecodeError as e:
+        print(f"  JSON parse failed: {e}")
+        print(f"  raw response head: {raw_response[:500]}")
+        raise
+
+    raw_claims: list[dict[str, Any]] = parsed.get("claims") or []
+    claims = _build_claims(raw_claims, source_name, source_type)
+    print(f"  Claude returned {len(claims)} claim(s)")
+    return claims
+
+
+def fetch_and_parse_url(
+    url: str,
+    source_type: str = "news_report",
+) -> list[ReportClaim]:
+    """
+    Fetch a URL, extract article text, parse into ReportClaims.
+
+    Uses httpx to fetch; Claude extracts article text from HTML before
+    claim extraction. Avoids beautifulsoup dependency.
+
+    Args:
+        url: article or report URL
+        source_type: "news_report" | "nws_survey" | "county_ema" | "fema_pda"
+
+    Returns:
+        list[ReportClaim]
+    """
+    try:
+        import httpx
+    except ImportError:
+        raise ImportError(
+            "httpx required for URL fetching. Install with: pip install httpx"
+        )
+
+    print(f"Fetching {url}...")
+    try:
+        response = httpx.get(url, timeout=30, follow_redirects=True)
+        response.raise_for_status()
+        html = response.text
+    except Exception as e:
+        raise RuntimeError(f"Failed to fetch {url}: {e}")
+
+    extraction_prompt = f"""Extract the main article or report text from this HTML.
+Ignore navigation, ads, scripts, styles, metadata, and page structure.
+Return only clean, readable text with paragraph breaks preserved.
+
+<html>
+{html[:50000]}
+</html>
+
+Return only the article text:"""
+
+    print(f"  extracting article text...")
+    raw_response = _call_claude_bedrock(extraction_prompt)
+    article_text = raw_response.strip()
+
+    print(f"  extracted {len(article_text)} chars")
+    source_name = urlparse(url).netloc or url
+    return parse_text(article_text, source_name=source_name, source_type=source_type)

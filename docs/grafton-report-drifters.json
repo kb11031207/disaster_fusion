@@ -1,0 +1,65 @@
+{
+  "report_metadata": {
+    "source_id": "src-003",
+    "source_type": "news_report",
+    "source_name": "First Alert 4 / Spectrum News — Grafton Business Damage Coverage",
+    "report_date": "2026-03-11",
+    "source_urls": [
+      "https://www.firstalert4.com/2026/03/11/grafton-businesses-damaged-after-ef-1-tornado-touched-down/",
+      "https://spectrumlocalnews.com/mo/st-louis/news/2026/03/11/grafton-ef-1-tornado-drifters-aeries"
+    ],
+    "reporter_context": "On-site reporting with interviews from business owners Adrienne Hayn (Drifters) and JD Lorton (Aeries Resort)"
+  },
+  "event": {
+    "event_name": "Grafton EF1 Tornado",
+    "event_type": "tornado",
+    "event_date": "2026-03-11",
+    "location": "Grafton, Jersey County, Illinois"
+  },
+  "claims": [
+    {
+      "claim_id": "rc-news-001",
+      "location_name": "Drifters Eats and Drinks, Main Street, Grafton, IL",
+      "location_county": "Jersey County",
+      "location_state": "IL",
+      "lat": null,
+      "lon": null,
+      "damage_type": "roof_damage",
+      "severity": "severe",
+      "damage_description": "Back roof completely removed. Second roof section on opposite side of building also completely gone. Recently constructed covered patio deck structure dislodged by tornado winds and thrown across Main Street, crashing through a wooden deck and into Dees Riverside Retreat. Roof over smoker and kitchen equipment blown off. Remaining attached roof has multiple leaks. Numerous windows busted from debris. Interior exposed to elements.",
+      "building_type": "commercial",
+      "building_name": "Drifters Eats and Drinks",
+      "structures_affected": 1,
+      "infrastructure_impacts": ["roof debris thrown across Main Street", "debris blocking adjacent properties"],
+      "injuries": 0,
+      "fatalities": 0,
+      "cost_estimate": null,
+      "operational_status": "closed",
+      "additional_context": "Owner Adrienne Hayn reported the patio was just built and opened Labor Day weekend. Staff displaced from work during repairs. Community fundraiser organized for affected employees. Owner stated: damage was a lot worse than initially expected.",
+      "is_valid": true,
+      "validation_errors": []
+    },
+    {
+      "claim_id": "rc-news-002",
+      "location_name": "Aeries Resort and Winery, Grafton, IL",
+      "location_county": "Jersey County",
+      "location_state": "IL",
+      "lat": null,
+      "lon": null,
+      "damage_type": "window_door_damage",
+      "severity": "moderate",
+      "damage_description": "Patio doors and screens at the winery blown out by tornado winds. A tree fell and punctured the roof of the main building. Alpine Coaster building sustained structural damage. Roof leak contained temporarily but requires full repair.",
+      "building_type": "commercial",
+      "building_name": "Aeries Resort and Winery",
+      "structures_affected": 2,
+      "infrastructure_impacts": [],
+      "injuries": 0,
+      "fatalities": 0,
+      "cost_estimate": null,
+      "operational_status": "partially_open",
+      "additional_context": "Located approximately 1.5 miles from Drifters. Director of Operations JD Lorton provided support to Drifters during cleanup. Lorton described roof leak as temporarily sealed but needing immediate attention before next weather event.",
+      "is_valid": true,
+      "validation_errors": []
+    }
+  ]
+}

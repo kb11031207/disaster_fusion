@@ -48,14 +48,6 @@ _FINDING_SCHEMA = {
             "type": "array",
             "items": {"type": "string"},
         },
-        "infrastructure_impacts": {
-            "type": "array",
-            "items": {"type": "string"},
-        },
-        "location_indicators": {
-            "type": "array",
-            "items": {"type": "string"},
-        },
         "visual_evidence_quality": {
             "type": "string",
             "enum": ["clear", "partial", "poor"],
@@ -95,13 +87,8 @@ def _build_prompt(disaster_type: str) -> str:
         "  (null if not visible). Read signs literally — a sign that says\n"
         '  "DRIFTERS" yields building_name "Drifters".\n'
         "- structures_affected: estimated count of damaged structures visible\n"
-        "- location_indicators: visible text, street signs, landmarks, or\n"
-        "  geographic features that could help identify the location\n"
         "- named_entities: proper nouns visible or mentioned in audio —\n"
-        "  business names, organization names, place names. Separate from\n"
-        "  location_indicators (those are geographic clues; these are names).\n"
-        "- infrastructure_impacts: list of infrastructure issues visible\n"
-        '  (e.g. "road blocked by debris", "power lines down")\n'
+        "  business names, organization names, place names.\n"
         "- visual_evidence_quality: one of [clear, partial, poor]\n"
         "  (clear = damage clearly visible, partial = partially obscured,\n"
         "  poor = hard to assess from footage)\n"
@@ -137,7 +124,12 @@ def analyze_video(
     if account_id is None:
         account_id = boto3.client("sts", region_name=region).get_caller_identity()["Account"]
 
-    bedrock = boto3.client("bedrock-runtime", region_name=region)
+    from botocore.config import Config
+    bedrock = boto3.client(
+        "bedrock-runtime",
+        region_name=region,
+        config=Config(read_timeout=600, connect_timeout=30, retries={"max_attempts": 2}),
+    )
 
     request_body = {
         "inputPrompt": _build_prompt(disaster_type),
@@ -161,4 +153,67 @@ def analyze_video(
 
     body = json.loads(response["body"].read().decode("utf-8"))
     # Pegasus puts the model's text/JSON output in body["message"].
-    return json.loads(body["message"])
+    message = body["message"]
+    try:
+        return json.loads(message)
+    except json.JSONDecodeError as e:
+        # Pegasus sometimes truncates output mid-string when the response is
+        # too long (no maxOutputTokens param available). Recover what we can:
+        # find the last complete finding object and rebuild a valid JSON.
+        print(f"Pegasus JSON truncated at char {e.pos} — attempting recovery...")
+        recovered = _recover_truncated_findings(message)
+        print(f"  recovered {len(recovered.get('findings', []))} finding(s)")
+        return recovered
+
+
+def _recover_truncated_findings(message: str) -> dict[str, Any]:
+    """
+    Attempt to recover a partial findings list from a truncated JSON response.
+    Walks balanced braces from the start of the findings array and keeps every
+    fully-closed object. Drops the truncated tail.
+    """
+    findings_start = message.find('"findings"')
+    if findings_start == -1:
+        return {"findings": []}
+    array_start = message.find("[", findings_start)
+    if array_start == -1:
+        return {"findings": []}
+
+    findings: list[dict[str, Any]] = []
+    i = array_start + 1
+    while i < len(message):
+        # Skip whitespace and commas between objects.
+        while i < len(message) and message[i] in " \t\n\r,":
+            i += 1
+        if i >= len(message) or message[i] != "{":
+            break
+        # Walk a balanced object, respecting strings/escapes.
+        depth = 0
+        in_string = False
+        escape = False
+        obj_start = i
+        while i < len(message):
+            ch = message[i]
+            if escape:
+                escape = False
+            elif ch == "\\" and in_string:
+                escape = True
+            elif ch == '"':
+                in_string = not in_string
+            elif not in_string:
+                if ch == "{":
+                    depth += 1
+                elif ch == "}":
+                    depth -= 1
+                    if depth == 0:
+                        i += 1
+                        try:
+                            findings.append(json.loads(message[obj_start:i]))
+                        except json.JSONDecodeError:
+                            pass
+                        break
+            i += 1
+        else:
+            # Reached end of message without closing — that's the truncated one.
+            break
+    return {"findings": findings}
