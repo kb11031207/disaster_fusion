@@ -1,0 +1,48 @@
+# Secrets
+.env
+*.env
+!.env.example
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyc
+.venv/
+venv/
+env/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Data (too large / sensitive for git)
+data/raw/videos/*.mp4
+data/raw/videos/*.mov
+data/processed/*.json
+exports/*.html
+exports/*.geojson
+exports/*.csv
+exports/*.pdf
+
+# Keep folder structure under data/ and exports/
+!data/raw/videos/.gitkeep
+!data/raw/reports/.gitkeep
+!data/processed/.gitkeep
+!data/ground_truth/.gitkeep
+!exports/.gitkeep
+
+# Streamlit
+.streamlit/secrets.toml
+data/raw/videos/SOURCES.md
+/data/raw/reports
+/docs
+/.whodare
+/.claude
+*.md

@@ -1,0 +1,79 @@
+# Per-disaster configuration for DisasterFusion.
+#
+# Each disaster_type drives:
+#   - the Pegasus prompt focus (what visual cues to emphasize)
+#   - the severity mapping from disaster-native scales → canonical severity enum
+#   - the typical damage types expected (for quick sanity filtering)
+#
+# The system is disaster-agnostic: no region or bounding box is configured here.
+# Coordinates come from the geocoder at runtime.
+
+hurricane:
+  pegasus_focus: >
+    wind damage vs. storm surge vs. flooding differentiation,
+    waterline marks on structures, roof and siding damage,
+    coastal erosion, submerged structures, debris fields,
+    road accessibility, power line damage
+  severity_mapping:
+    cat1: moderate
+    cat2: severe
+    cat3: destroyed
+    cat4: destroyed
+    cat5: destroyed
+  typical_damage_types:
+    - flooding
+    - roof_damage
+    - structural_collapse
+    - erosion
+    - infrastructure_damage
+    - debris_field
+
+tornado:
+  pegasus_focus: >
+    structural collapse patterns, roof removal, debris scatter direction,
+    path width indicators, EF-scale-consistent damage signatures, fallen trees
+  severity_mapping:
+    ef0: minor
+    ef1: moderate
+    ef2: severe
+    ef3: destroyed
+    ef4: destroyed
+    ef5: destroyed
+  typical_damage_types:
+    - structural_collapse
+    - roof_damage
+    - debris_field
+    - vegetation_damage
+    - infrastructure_damage
+
+flood:
+  pegasus_focus: >
+    water depth indicators, submerged structures, silt/mud lines,
+    structural displacement from water flow, road accessibility
+  severity_mapping: {}
+  typical_damage_types:
+    - flooding
+    - structural_collapse
+    - infrastructure_damage
+    - erosion
+    - vehicle_damage
+
+wildfire:
+  pegasus_focus: >
+    burn perimeter, structure survivability, vegetation loss extent,
+    ember damage vs. direct flame contact
+  severity_mapping: {}
+  typical_damage_types:
+    - fire_damage
+    - structural_collapse
+    - vegetation_damage
+
+earthquake:
+  pegasus_focus: >
+    structural cracking patterns, building lean/tilt, pancake collapse,
+    ground displacement, liquefaction evidence
+  severity_mapping: {}
+  typical_damage_types:
+    - structural_collapse
+    - infrastructure_damage
+    - debris_field

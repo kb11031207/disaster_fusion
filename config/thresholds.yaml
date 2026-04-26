@@ -1,0 +1,31 @@
+# Tunable thresholds for fusion. Everything here is overridable at runtime.
+
+fusion:
+  # Pass A: Report → Video via Marengo cosine similarity
+  pass_a_similarity_threshold: 0.30   # min cosine score to consider a match
+
+  # Pass B: Video → Report via spatial + LLM semantic
+  pass_b_spatial_radius_km: 5.0       # haversine filter before semantic
+  pass_b_combined_threshold: 0.50     # min combined score for a match
+
+confidence:
+  # Weights for the four signals that compose the overall confidence score.
+  # Must sum to 1.0.
+  weights:
+    spatial_proximity: 0.30
+    semantic_similarity: 0.35
+    severity_agreement: 0.20
+    source_reliability: 0.15
+
+  source_reliability:
+    fema_pda: 0.9
+    fema_pw: 0.9
+    nws_survey: 0.9
+    city_report: 0.7
+    news_media: 0.5
+    other: 0.5
+
+validation:
+  min_description_length: 20          # characters, for Pegasus finding descriptions
+  min_claim_description_length: 10    # characters, for parsed report claims
+  timestamp_tolerance: 0.10           # fraction of video duration allowed as overhang
